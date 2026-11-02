@@ -99,6 +99,7 @@ export class Gateway {
         this.handle(peer, frame)
       } catch (error) {
         const code = error instanceof ApiError ? error.code : 'INVALID_MESSAGE'
+        console.log(`[error] code=${code} frame=${frame?.type ?? 'decode'} msg=${error instanceof Error ? error.message : String(error)}`)
         // Valid connection-scoped failures must not close the Host's other clients.
         const connectionId = (frame?.payload as { connectionId?: unknown } | undefined)?.connectionId
         if (peer && typeof connectionId === 'string' && code !== 'RATE_LIMITED') {
