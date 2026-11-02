@@ -5,7 +5,9 @@ import { createControlFrame, decodeControlFrame, MAX_CONTROL_FRAME_BYTES, MAX_RE
 import { ApiError, Store } from './store.js'
 
 type Peer = { ws: WebSocket; id: string; role: 'host' | 'client'; capabilities: string[]; version: string; lastPong: number; nonce?: string }
-type Link = { id: string; host: string; client: string; stage: 'pending' | 'accepted' | 'handshake' | 'ready'; created: number; counters: Map<string, number> }
+type Link = { id: string; host: string; client: string; stage: 'pending' | 'accepted' | 'handshake' | 'ready'; transports: TransportName[]; created: number; counters: Map<string, number> }
+const SERVER_TRANSPORTS = ['transport.lan', 'transport.p2p', 'transport.turn', 'transport.relay'] as const
+type TransportName = 'lan' | 'p2p' | 'turn' | 'relay'
 function modernHost(version: string): boolean {
   const match = /^v?(\d+)\.(\d+)\.(\d+)(?:\+.*)?$/.exec(version)
   if (!match) return false
@@ -32,7 +34,7 @@ export class Gateway {
         peer.nonce = randomUUID()
         this.send(peer, createControlFrame('ping', { nonce: peer.nonce }))
       }
-      for (const link of this.links.values()) if (link.stage !== 'ready' && Date.now() - link.created > 30_000) this.drop(link, 'CONNECTION_FAILED')
+      for (const link of this.links.values()) if (link.stage !== 'ready' && Date.now() - link.created > 60_000) this.drop(link, 'CONNECTION_FAILED')
     }, 25_000)
     this.heartbeat.unref()
   }
@@ -85,7 +87,8 @@ export class Gateway {
           this.peers.set(peer.id, peer)
           clearTimeout(deadline)
           this.store.touch(peer.id, p.clientVersion, p.harnessVersion)
-          this.send(peer, createControlFrame('hello.ack', { protocol: 1, serverVersion: 'self-hosted/0.1.0', connectionSessionId: randomUUID(), heartbeatIntervalMs: 25000, maxControlFrameBytes: MAX_CONTROL_FRAME_BYTES, maxRelayFrameBytes: MAX_RELAY_FRAME_BYTES, capabilities: p.capabilities.includes('transport.relay') ? ['transport.relay'] : [], webrtcEnabled: false, webrtcFallbackTimeoutMs: 1 }))
+          const negotiated = SERVER_TRANSPORTS.filter(capability => p.capabilities.includes(capability))
+          this.send(peer, createControlFrame('hello.ack', { protocol: 1, serverVersion: 'self-hosted/0.1.0', connectionSessionId: randomUUID(), heartbeatIntervalMs: 25000, maxControlFrameBytes: MAX_CONTROL_FRAME_BYTES, maxRelayFrameBytes: MAX_RELAY_FRAME_BYTES, capabilities: negotiated, webrtcEnabled: negotiated.some(capability => capability !== 'transport.relay'), webrtcFallbackTimeoutMs: 15_000 }))
           return
         }
         if (this.peers.get(peer.id) !== peer) throw new ApiError('AUTH_INVALID')
@@ -120,12 +123,16 @@ export class Gateway {
       const host = this.peers.get(request.hostDeviceId)
       if (!host || host.role !== 'host') { this.send(peer, createControlFrame('error', { code: 'HOST_OFFLINE', message: 'Host is offline.', retryable: true })); return }
       this.store.get(host.id)
-      if (!request.preferredTransports.includes('relay') || !peer.capabilities.includes('transport.relay') || !host.capabilities.includes('transport.relay')) throw new ApiError('CAPABILITY_NOT_SUPPORTED')
+      const common = SERVER_TRANSPORTS.filter(capability => peer.capabilities.includes(capability) && host.capabilities.includes(capability))
+      const transports = common
+        .map(capability => capability.slice('transport.'.length) as TransportName)
+        .filter(transport => request.preferredTransports.includes(transport))
+      if (!transports.includes('relay')) throw new ApiError('CAPABILITY_NOT_SUPPORTED')
       for (const old of this.links.values()) if (old.client === peer.id || (old.host === host.id && !modernHost(host.version))) this.drop(old, 'CONNECTION_REPLACED')
       if (this.links.size >= 256) throw new ApiError('RATE_LIMITED')
-      const link: Link = { id: randomUUID(), host: host.id, client: peer.id, stage: 'pending', created: Date.now(), counters: new Map() }
+      const link: Link = { id: randomUUID(), host: host.id, client: peer.id, stage: 'pending', transports, created: Date.now(), counters: new Map() }
       this.links.set(link.id, link)
-      this.send(host, createControlFrame('connect.incoming', { connectionId: link.id, clientDeviceId: peer.id, clientIdentityKey: this.store.get(peer.id).descriptor.identityKey, authorization: 'account', preferredTransports: ['relay'] }))
+      this.send(host, createControlFrame('connect.incoming', { connectionId: link.id, clientDeviceId: peer.id, clientIdentityKey: this.store.get(peer.id).descriptor.identityKey, authorization: 'account', preferredTransports: transports }))
       return
     }
     const id = p.connectionId
@@ -144,11 +151,16 @@ export class Gateway {
     }
     if (p.targetDeviceId !== otherId || link.stage === 'pending') throw new ApiError('CONNECTION_NOT_FOUND')
     if (frame.type === 'transport.selected') {
-      if (peer.id !== link.client || (frame.payload as TransportSelectedPayload).transport !== 'relay') throw new ApiError('CAPABILITY_NOT_SUPPORTED')
+      if (peer.id !== link.client) throw new ApiError('INVALID_MESSAGE')
+      const selected = (frame.payload as TransportSelectedPayload).transport
+      if (!link.transports.includes(selected as TransportName)) throw new ApiError('CAPABILITY_NOT_SUPPORTED')
       if (modernHost(other.version)) this.send(other, frame)
       return
     }
-    if (frame.type.startsWith('signal.')) return // Relay-only negotiation: no signaling forwarding.
+    if (frame.type === 'signal.offer' || frame.type === 'signal.answer' || frame.type === 'signal.ice') {
+      this.send(other, frame)
+      return
+    }
     if (frame.type === 'secure.handshake') {
       const step = (frame.payload as SecureHandshakePayload).step
       if (step === 1 && peer.id === link.client && link.stage === 'accepted') link.stage = 'handshake'
