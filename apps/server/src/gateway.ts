@@ -44,6 +44,7 @@ export class Gateway {
     peer.ws.send(JSON.stringify(frame))
   }
   private drop(link: Link, code: string): void {
+    console.log(`[drop] link=${link.id.slice(0, 8)} code=${code} stage=${link.stage} age=${Date.now() - link.created}ms`)
     this.links.delete(link.id)
     for (const id of [link.host, link.client]) {
       const p = this.peers.get(id)
@@ -51,6 +52,7 @@ export class Gateway {
     }
   }
   disconnect(id: string, code: string): void {
+    console.log(`[disconnect] device=${id.slice(0, 8)} code=${code}`)
     const peer = this.peers.get(id)
     this.peers.delete(id)
     for (const link of this.links.values()) if (link.host === id || link.client === id) this.drop(link, code)
@@ -167,6 +169,7 @@ export class Gateway {
     }
     if (frame.type === 'secure.handshake') {
       const step = (frame.payload as SecureHandshakePayload).step
+      console.log(`[handshake] step=${step} link=${link.id.slice(0, 8)} from=${peer.id.slice(0, 8)} stage=${link.stage}`)
       if (step === 1 && peer.id === link.client && link.stage === 'accepted') link.stage = 'handshake'
       else if (step === 2 && peer.id === link.host && link.stage === 'handshake') link.stage = 'ready'
       else throw new ApiError('INVALID_MESSAGE')
