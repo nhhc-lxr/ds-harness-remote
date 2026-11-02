@@ -88,6 +88,7 @@ export class Gateway {
           clearTimeout(deadline)
           this.store.touch(peer.id, p.clientVersion, p.harnessVersion)
           const negotiated = SERVER_TRANSPORTS.filter(capability => p.capabilities.includes(capability))
+          console.log(`[hello] role=${peer.role} device=${peer.id.slice(0, 8)} caps=${negotiated.join(',') || 'none'}`)
           this.send(peer, createControlFrame('hello.ack', { protocol: 1, serverVersion: 'self-hosted/0.1.0', connectionSessionId: randomUUID(), heartbeatIntervalMs: 25000, maxControlFrameBytes: MAX_CONTROL_FRAME_BYTES, maxRelayFrameBytes: MAX_RELAY_FRAME_BYTES, capabilities: negotiated, webrtcEnabled: negotiated.some(capability => capability !== 'transport.relay'), webrtcFallbackTimeoutMs: 15_000 }))
           return
         }
@@ -132,6 +133,7 @@ export class Gateway {
       if (this.links.size >= 256) throw new ApiError('RATE_LIMITED')
       const link: Link = { id: randomUUID(), host: host.id, client: peer.id, stage: 'pending', transports, created: Date.now(), counters: new Map() }
       this.links.set(link.id, link)
+      console.log(`[connect] ${peer.id.slice(0, 8)} -> ${host.id.slice(0, 8)} transports=${transports.join(',')} link=${link.id.slice(0, 8)}`)
       this.send(host, createControlFrame('connect.incoming', { connectionId: link.id, clientDeviceId: peer.id, clientIdentityKey: this.store.get(peer.id).descriptor.identityKey, authorization: 'account', preferredTransports: transports }))
       return
     }
@@ -153,11 +155,13 @@ export class Gateway {
     if (frame.type === 'transport.selected') {
       if (peer.id !== link.client) throw new ApiError('INVALID_MESSAGE')
       const selected = (frame.payload as TransportSelectedPayload).transport
+      console.log(`[selected] transport=${selected} link=${link.id.slice(0, 8)}`)
       if (!link.transports.includes(selected as TransportName)) throw new ApiError('CAPABILITY_NOT_SUPPORTED')
       if (modernHost(other.version)) this.send(other, frame)
       return
     }
     if (frame.type === 'signal.offer' || frame.type === 'signal.answer' || frame.type === 'signal.ice') {
+      console.log(`[signal] ${frame.type} link=${link.id.slice(0, 8)} from=${peer.id.slice(0, 8)}`)
       this.send(other, frame)
       return
     }
