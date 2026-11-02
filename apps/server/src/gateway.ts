@@ -156,9 +156,8 @@ export class Gateway {
     }
     if (p.targetDeviceId !== otherId || link.stage === 'pending') throw new ApiError('CONNECTION_NOT_FOUND')
     if (frame.type === 'transport.selected') {
-      if (peer.id !== link.client) throw new ApiError('INVALID_MESSAGE')
       const selected = (frame.payload as TransportSelectedPayload).transport
-      console.log(`[selected] transport=${selected} link=${link.id.slice(0, 8)}`)
+      console.log(`[selected] transport=${selected} link=${link.id.slice(0, 8)} from=${peer.id.slice(0, 8)}`)
       if (!link.transports.includes(selected as TransportName)) throw new ApiError('CAPABILITY_NOT_SUPPORTED')
       if (modernHost(other.version)) this.send(other, frame)
       return
